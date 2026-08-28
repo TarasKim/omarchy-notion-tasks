@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "io.github.taraskim.notion-tasks",
-  "name": "Notion tasks",
+  "name": "Notion Tasks",
   "version": "2.0.0",
   "author": "Taras Kim",
   "license": "MIT",
@@ -14,7 +14,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Notion tasks",
+    "displayName": "Notion Tasks",
     "description": "Overdue and due-today count in the bar; click for the merged task list, complete or restatus without leaving it.",
     "category": "Productivity",
     "allowMultiple": false,
