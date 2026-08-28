@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.taraskim.notion-tasks",
+  "name": "Notion tasks",
+  "version": "2.0.0",
+  "author": "Taras Kim",
+  "license": "MIT",
+  "description": "Open tasks from any number of your own Notion databases, merged and triaged in the bar, with quick capture and status changes in place.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Notion tasks",
+    "description": "Overdue and due-today count in the bar; click for the merged task list, complete or restatus without leaving it.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "refreshIntervalSec": 300,
+      "hideUnimportant": true,
+      "showAllOwners": false,
+      "hiddenSources": [],
+      "label": "✓",
+      "pageSize": 14,
+      "openCommand": "",
+      "groupBySource": true,
+      "showStatus": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "pageSize",
+        "type": "integer",
+        "label": "Tasks per page",
+        "min": 3,
+        "max": 40,
+        "step": 1,
+        "defaultValue": 14
+      },
+      {
+        "key": "hideUnimportant",
+        "type": "boolean",
+        "label": "Hide the lowest priority on each board",
+        "defaultValue": true
+      },
+      {
+        "key": "groupBySource",
+        "type": "boolean",
+        "label": "Group by project",
+        "defaultValue": true
+      },
+      {
+        "key": "showStatus",
+        "type": "boolean",
+        "label": "Show task status",
+        "defaultValue": true
+      },
+      {
+        "key": "showAllOwners",
+        "type": "boolean",
+        "label": "Include tasks owned by other people",
+        "defaultValue": false
+      },
+      {
+        "key": "label",
+        "type": "string",
+        "label": "Bar glyph",
+        "defaultValue": "✓"
+      },
+      {
+        "key": "openCommand",
+        "type": "string",
+        "label": "Command used to open a task (blank = bundled open-task.sh)",
+        "defaultValue": ""
+      }
+    ]
+  }
+}

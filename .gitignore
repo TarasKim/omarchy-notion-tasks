@@ -1,0 +1,9 @@
+# Secrets and per-machine state never belong in the repo. The token lives in
+# ~/.config/omarchy/notion-tasks.env and the board list in
+# ~/.config/omarchy/notion-tasks.json — both outside this directory — but a
+# stray copy left here while debugging must not be committed by accident.
+*.env
+notion-tasks.json
+*.tmp
+*.orig
+*.rej
