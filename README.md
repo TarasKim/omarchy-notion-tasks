@@ -30,9 +30,19 @@ empty your widget, because the query asks by group rather than by name. And a
 board this plugin has never seen — different words, different priorities, no
 priority at all — needs no code to work.
 
-## Setup
+## Install
 
-You need `jq`, `curl` and `gum`. Omarchy ships all three.
+```bash
+omarchy plugin add https://github.com/TarasKim/omarchy-notion-tasks --enable
+```
+
+Then run the setup below and `omarchy restart shell`.
+
+Needs `jq`, `curl` and `gum` — Omarchy ships all three — and Hyprland for the
+window reuse in `open-task.sh` (set `openCommand` to `xdg-open` if you would
+rather have browser tabs).
+
+## Setup
 
 ```bash
 bash ~/.config/omarchy/plugins/io.github.taraskim.notion-tasks/setup.sh
@@ -279,6 +289,28 @@ The IPC surface is useful while working on it:
 qs -p /usr/share/omarchy/shell ipc call io.github.taraskim.notion-tasks stats
 qs -p /usr/share/omarchy/shell ipc call io.github.taraskim.notion-tasks projects
 ```
+
+## Removing it
+
+```bash
+omarchy plugin remove io.github.taraskim.notion-tasks
+```
+
+That takes the plugin out of the bar and deletes its directory. Three things
+live outside it and are left alone, because they are yours:
+
+```bash
+rm ~/.config/omarchy/notion-tasks.env      # the token
+rm ~/.config/omarchy/notion-tasks.json     # which boards you chose
+rm ~/.local/state/omarchy/notion-tasks.json # the cache
+```
+
+Nothing in Notion is touched by removal — no task, status or database is
+changed. If you also want the integration gone, revoke it at
+<https://www.notion.so/profile/integrations>; that is what actually ends its
+access to your workspace.
+
+If you bound `SUPER + N`, drop that line from `~/.config/hypr/bindings.lua`.
 
 ## Licence
 
