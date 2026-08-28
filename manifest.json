@@ -5,6 +5,7 @@
   "version": "2.0.0",
   "author": "Taras Kim",
   "license": "MIT",
+  "homepage": "https://github.com/TarasKim/omarchy-notion-tasks",
   "description": "Open tasks from any number of your own Notion databases, merged and triaged in the bar, with quick capture and status changes in place.",
   "kinds": [
     "bar-widget"
