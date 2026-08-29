@@ -372,15 +372,70 @@ Panel {
 
   function moveCursor(delta) {
     if (totalRows === 0) return
+    suppressHover()
     cursorIndex = Math.max(0, Math.min(totalRows - 1, cursorIndex + delta))
   }
 
   function changePage(direction) {
     if (totalRows === 0) return
+    suppressHover()
     var target = Math.max(0, Math.min(pageCount - 1, page + direction))
     cursorIndex = Math.min(totalRows - 1, target * pageSize)
     cursorActive = true
   }
+
+  // MouseArea.onEntered fires when a row slides under a stationary pointer
+  // exactly as it does when the pointer moves onto a row. Now that the keyboard
+  // scrolls the list, that means every arrow press hands the cursor straight
+  // back to whatever the mouse happens to be resting on — the selection walks
+  // down two rows and snaps back up. Hover is ignored for a moment after a key
+  // moves the cursor; a pointer that is genuinely moving takes it again as soon
+  // as the window passes.
+  property real hoverIgnoredUntil: 0
+  function suppressHover() { hoverIgnoredUntil = Date.now() + 250 }
+  function hoverCursor(index) {
+    if (Date.now() < hoverIgnoredUntil) return
+    cursorActive = true
+    cursorIndex = index
+  }
+
+  // The popup fits its content up to a maximum height, past which the list
+  // scrolls. Keyboard movement has to carry the viewport with it, or the
+  // highlight walks off the bottom and only the mouse can fetch it back.
+  //
+  // Wired into the hasCursor handler of every row rather than computed from
+  // the index, because once boards are grouped the rows sit in a Column of
+  // Columns with headers between them and no arithmetic on cursorInPage knows
+  // where any of them ended up. That is the shape the shell's own dev-gallery
+  // documents as the pattern for exactly this case.
+  function ensureCursorVisible(item) {
+    if (!item || !panelFlick || panelFlick.contentY === undefined) return
+    var content = panelFlick.contentItem || panelFlick
+    var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+    if (maxY <= 0) return
+    // Only the hero and a group header sit above the first row, so revealing
+    // that row means showing them with it. Scrolling just far enough to clear
+    // it parks it against the top edge and leaves the popup looking untitled.
+    if (cursorInPage <= 0) { panelFlick.contentY = 0; return }
+    var top = item.mapToItem(content, 0, 0).y
+    var bottom = top + (item.height || 0)
+    var margin = Style.spacing.xxl
+    if (top - margin < panelFlick.contentY)
+      panelFlick.contentY = Math.max(0, Math.min(maxY, top - margin))
+    else if (bottom + margin > panelFlick.contentY + panelFlick.height)
+      panelFlick.contentY = Math.max(0, Math.min(maxY, bottom + margin - panelFlick.height))
+  }
+
+  // Turning a page, or switching to the capture form or the status picker,
+  // replaces the content outright: where the old content was scrolled to means
+  // nothing to the new one, and leaving it there strands the top of the list.
+  function resetScroll() {
+    if (panelFlick && panelFlick.contentY !== undefined) panelFlick.contentY = 0
+  }
+
+  onPageChanged: resetScroll()
+  onCapturingChanged: resetScroll()
+  onChoosingStatusChanged: resetScroll()
 
   function activateCursor() {
     if (cursorIndex >= 0 && cursorIndex < totalRows) openTask(orderedTasks[cursorIndex])
@@ -705,7 +760,10 @@ Panel {
                     pendingComplete: root.isPendingComplete(modelData)
                     fontFamily: root.fontFamily
                     onActivated: root.openTask(modelData)
-                    onHovered: { root.cursorActive = true; root.cursorIndex = root.page * root.pageSize + index }
+                    onHovered: root.hoverCursor(root.page * root.pageSize + index)
+                    // Deferred: crossing a page boundary rebuilds the rows, so
+                    // this fires on a delegate that has not been laid out yet.
+                    onHasCursorChanged: if (hasCursor) Qt.callLater(root.ensureCursorVisible, this)
                   }
                 }
               }
@@ -757,7 +815,8 @@ Panel {
                         pendingComplete: root.isPendingComplete(modelData)
                         fontFamily: root.fontFamily
                         onActivated: root.openTask(modelData)
-                        onHovered: { root.cursorActive = true; root.cursorIndex = root.page * root.pageSize + pageRow }
+                        onHovered: root.hoverCursor(root.page * root.pageSize + pageRow)
+                        onHasCursorChanged: if (hasCursor) Qt.callLater(root.ensureCursorVisible, this)
                       }
                     }
                   }
