@@ -186,7 +186,9 @@ Column {
     placeholderText: "Due — today, tomorrow, +3d, 2026-09-01 (optional)"
     foreground: form.foreground
     font.family: form.fontFamily
-    font.pixelSize: Style.font.bodySmall
+    // Same size as the title field above it. Two inputs in one form set at
+    // two sizes reads as a mistake, not as a hierarchy.
+    font.pixelSize: Style.font.body
     onTextChanged: form.dueText = text
     onAccepted: if (form.canSubmit) form.submitted()
   }
@@ -197,7 +199,9 @@ Column {
     text: form.errorText
     color: form.urgent
     font.family: form.fontFamily
-    font.pixelSize: Style.font.bodySmall
+    // An error has to outrank the key hints below it, and one pixel of
+    // difference does not do that.
+    font.pixelSize: Style.font.body
     wrapMode: Text.WordWrap
   }
 

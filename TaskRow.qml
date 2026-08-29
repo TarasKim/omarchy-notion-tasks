@@ -119,6 +119,14 @@ Item {
       color: row.chipColor
       font.family: row.fontFamily
       font.pixelSize: Style.font.caption
+      // Capitals set at caption size need the tracking; without it the chip
+      // column reads as a smudge rather than as labels. The hero's meta line
+      // does the same at 1.2 — less here, because this one sits in a fixed
+      // column and has to leave room for the longest tag on the board.
+      font.letterSpacing: 0.8
+      // Weight, not just colour, carries the top of the scale: a red chip and
+      // a grey one at the same weight is the same information twice for most
+      // people and none at all for the rest.
       font.bold: row.heat === "high"
       elide: Text.ElideRight
     }
@@ -166,7 +174,11 @@ Item {
       text: row.pending ? row.pendingLabel : Model.dueLabel(row.task)
       color: row.pending ? row.dim : row.dueColor
       font.family: row.fontFamily
-      font.pixelSize: Style.font.bodySmall
+      // Caption, with the chip, the status and the badge. At bodySmall this
+      // sat one pixel under the task name, which is not a step anyone can
+      // see — it just made the row look mis-set. Overdue still shouts, in the
+      // two channels that carry at this size: colour and weight.
+      font.pixelSize: Style.font.caption
       font.bold: !row.pending && row.urgency === "overdue"
       font.italic: row.pending
     }

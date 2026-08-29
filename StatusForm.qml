@@ -88,7 +88,7 @@ Column {
     text: form.errorText
     color: form.urgent
     font.family: form.fontFamily
-    font.pixelSize: Style.font.bodySmall
+    font.pixelSize: Style.font.body
     wrapMode: Text.WordWrap
   }
 

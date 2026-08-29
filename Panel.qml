@@ -696,7 +696,7 @@ Panel {
               text: root.problem
               color: root.urgent
               font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
+              font.pixelSize: Style.font.body
               wrapMode: Text.WordWrap
             }
 
@@ -718,6 +718,12 @@ Panel {
                 }
                 foreground: root.foreground
                 fontFamily: root.fontFamily
+                // Grouped, the board headers below are the labels that matter
+                // and this line is context above them; three identical labels
+                // stacked together tell you nothing about what contains what.
+                // Ungrouped there are no board headers, so it is the only one
+                // and takes the weight back.
+                font.bold: !root.groupBySource
               }
 
               Text {
@@ -884,11 +890,18 @@ Panel {
 
               Text {
                 width: parent.width
+                // The keys carry the weight, not their descriptions: in one
+                // dim run of caption text the eye needs somewhere to land, and
+                // what you are looking for here is always the key. Every part
+                // of this string is a literal, so StyledText has nothing to
+                // escape — the board names above are user text and stay plain.
+                textFormat: Text.StyledText
                 text: (root.statusBusy ? "Saving…"
                        : root.fetching ? "Refreshing…"
                        : "Updated " + Model.updatedLabel(root.updatedAt))
-                      + "     n new   s status   d done   ←→ page   g group   r refresh"
-                      + "   m mine/all   o database"
+                      + "     <b>n</b> new   <b>s</b> status   <b>d</b> done"
+                      + "   <b>←→</b> page   <b>g</b> group   <b>r</b> refresh"
+                      + "   <b>m</b> mine/all   <b>o</b> database"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

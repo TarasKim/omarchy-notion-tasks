@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.taraskim.notion-tasks",
   "name": "Notion Tasks",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "author": "Taras Kim",
   "license": "MIT",
   "homepage": "https://github.com/TarasKim/omarchy-notion-tasks",
