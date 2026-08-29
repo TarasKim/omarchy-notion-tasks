@@ -18,8 +18,13 @@ CONFIG_FILE="$HOME/.config/omarchy/notion-tasks.json"
 CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/notion-tasks.json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFER="$HERE/notion.jq"
+LIB="$HERE/notion-lib.sh"
 
 mkdir -p "$(dirname "$CACHE")"
+# The cache is your whole task list, and everything written from here on is
+# either it or a temp file. The umask goes after the mkdir because the rest of
+# ~/.local/state/omarchy belongs to other omarchy components, not to us.
+umask 077
 TMPDIR_RUN=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMPDIR_RUN"' EXIT
 
@@ -39,12 +44,15 @@ die() {
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 command -v curl >/dev/null 2>&1 || die "curl is not installed"
 [[ -f $INFER ]] || die "missing notion.jq next to fetch.sh"
+[[ -f $LIB ]] || die "missing notion-lib.sh next to fetch.sh"
 [[ -f $ENV_FILE ]] || die "missing $ENV_FILE — run setup.sh"
 [[ -f $CONFIG_FILE ]] || die "no projects configured — run setup.sh"
 
-# shellcheck source=/dev/null
-set -a; source "$ENV_FILE"; set +a
-[[ -n ${NOTION_TOKEN:-} ]] || die "NOTION_TOKEN not set in $ENV_FILE"
+# shellcheck source=notion-lib.sh
+NOTION_ENV_FILE="$ENV_FILE"; source "$LIB"
+NOTION_TOKEN=$(notion_read_token) || die "NOTION_TOKEN not set in $ENV_FILE"
+# The token travels to curl in a file, never as an argument. See notion-lib.sh.
+AUTH=$(notion_auth_file "$TMPDIR_RUN" "$NOTION_TOKEN") || die "could not stage the auth header"
 
 jq -e '.sources | type == "array" and length > 0' >/dev/null 2>&1 <"$CONFIG_FILE" \
   || die "no projects in $CONFIG_FILE — run setup.sh"
@@ -53,7 +61,7 @@ ME=$(jq -r '.me // ""' "$CONFIG_FILE")
 
 api_get() {
   curl -fsS --max-time 20 "https://api.notion.com/v1/$1" \
-    -H "Authorization: Bearer $NOTION_TOKEN" \
+    -H @"$AUTH" \
     -H "Notion-Version: $NOTION_VERSION"
 }
 
@@ -84,7 +92,7 @@ fetch_all() {
 
     resp=$(curl -fsS --max-time 20 \
       -X POST "https://api.notion.com/v1/databases/$db/query" \
-      -H "Authorization: Bearer $NOTION_TOKEN" \
+      -H @"$AUTH" \
       -H "Notion-Version: $NOTION_VERSION" \
       -H "Content-Type: application/json" \
       -d "$body") || return 1
@@ -124,6 +132,14 @@ for (( i = 0; i < count; i++ )); do
   label=$(jq -r '.label // ""' <<<"$entry")
   db=$(jq -r '.database // ""' <<<"$entry")
   [[ -n $key && -n $db ]] || die "project $i in $CONFIG_FILE needs a key and a database"
+
+  # $key becomes a filename below and $db goes into a request path. setup.sh
+  # only ever writes safe values, but this config file is documented, so it
+  # gets hand-edited; neither is checked anywhere else.
+  [[ $key =~ ^[A-Za-z0-9_-]+$ ]] \
+    || die "project key \"$key\" in $CONFIG_FILE must be letters, digits, - or _"
+  db=$(notion_normalize_id "$db") \
+    || die "\"$label\" has a database id that is not 32 hex digits"
 
   schema_raw="$TMPDIR_RUN/$key.raw.json"
   schema="$TMPDIR_RUN/$key.schema.json"
@@ -196,6 +212,7 @@ for (( i = 0; i < count; i++ )); do
     [[ -n $rel ]] || continue
     target=$(jq -r --arg r "$rel" '.relationTargets[$r] // ""' "$schema")
     [[ -n $target ]] || continue
+    target=$(notion_normalize_id "$target") || continue
     if fetch_relation "$target" "$TMPDIR_RUN/$key.rel.json"; then
       jq --arg r "$rel" --slurpfile v "$TMPDIR_RUN/$key.rel.json" '. + {($r): $v[0]}' \
         "$rels" >"$rels.tmp" && mv "$rels.tmp" "$rels"

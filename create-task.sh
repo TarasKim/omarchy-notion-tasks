@@ -21,6 +21,7 @@ ENV_FILE="$HOME/.config/omarchy/notion-tasks.env"
 CONFIG_FILE="$HOME/.config/omarchy/notion-tasks.json"
 CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/notion-tasks.json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$HERE/notion-lib.sh"
 
 die() { echo "$1" >&2; exit 1; }
 
@@ -43,10 +44,18 @@ done
 [[ -n $dest ]]  || die "task needs a destination project"
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
+command -v curl >/dev/null 2>&1 || die "curl is not installed"
+[[ -f $LIB ]] || die "missing notion-lib.sh next to create-task.sh"
 [[ -f $ENV_FILE ]] || die "missing $ENV_FILE"
-# shellcheck source=/dev/null
-set -a; source "$ENV_FILE"; set +a
-[[ -n ${NOTION_TOKEN:-} ]] || die "NOTION_TOKEN not set"
+
+# shellcheck source=notion-lib.sh
+NOTION_ENV_FILE="$ENV_FILE"; source "$LIB"
+NOTION_TOKEN=$(notion_read_token) || die "NOTION_TOKEN not set"
+
+TMP=$(mktemp -d) || die "could not create a temp directory"
+trap 'rm -rf "$TMP"' EXIT
+# The token travels to curl in a file, never as an argument. See notion-lib.sh.
+AUTH=$(notion_auth_file "$TMP" "$NOTION_TOKEN") || die "could not stage the auth header"
 
 # The cache carries the inferred schema, so creating a task costs no extra
 # schema request. It is written by fetch.sh before the widget can offer a
@@ -57,6 +66,7 @@ src=$(jq -c --arg k "$dest" '.sources[]? | select(.key == $k)' "$CACHE")
 
 db=$(jq -r '.database // ""' <<<"$src")
 [[ -n $db ]] || die "project $dest has no database id"
+db=$(notion_normalize_id "$db") || die "project $dest has a malformed database id"
 
 pTitle=$(jq -r '.props.title // ""' <<<"$src")
 pStatus=$(jq -r '.props.status // ""' <<<"$src")
@@ -119,7 +129,7 @@ done
 payload=$(jq -n --arg db "$db" --argjson props "$props" '{parent: {database_id: $db}, properties: $props}')
 
 resp=$(curl -sS --max-time 20 -X POST "https://api.notion.com/v1/pages" \
-  -H "Authorization: Bearer $NOTION_TOKEN" \
+  -H @"$AUTH" \
   -H "Notion-Version: $NOTION_VERSION" \
   -H "Content-Type: application/json" \
   -d "$payload") || die "could not reach Notion"

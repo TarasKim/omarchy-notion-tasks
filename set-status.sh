@@ -15,6 +15,7 @@ set -uo pipefail
 NOTION_VERSION="2022-06-28"
 ENV_FILE="$HOME/.config/omarchy/notion-tasks.env"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$HERE/notion-lib.sh"
 
 die() { echo "$1" >&2; exit 1; }
 
@@ -32,19 +33,27 @@ done
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 command -v curl >/dev/null 2>&1 || die "curl is not installed"
+[[ -f $LIB ]] || die "missing notion-lib.sh next to set-status.sh"
 [[ -f $ENV_FILE ]] || die "missing $ENV_FILE"
-# shellcheck source=/dev/null
-set -a; source "$ENV_FILE"; set +a
-[[ -n ${NOTION_TOKEN:-} ]] || die "NOTION_TOKEN not set"
+
+# shellcheck source=notion-lib.sh
+NOTION_ENV_FILE="$ENV_FILE"; source "$LIB"
+NOTION_TOKEN=$(notion_read_token) || die "NOTION_TOKEN not set"
+
+TMP=$(mktemp -d) || die "could not create a temp directory"
+trap 'rm -rf "$TMP"' EXIT
+# The token travels to curl in a file, never as an argument. See notion-lib.sh.
+AUTH=$(notion_auth_file "$TMP" "$NOTION_TOKEN") || die "could not stage the auth header"
 
 # The widget passes the 32-hex id from the cache; accept the dashed form too.
-page="${page//-/}"
-[[ $page =~ ^[0-9a-fA-F]{32}$ ]] || die "not a Notion page id: $page"
+# Keep the original for the message: the assignment clobbers $page on failure.
+raw_page="$page"
+page=$(notion_normalize_id "$raw_page") || die "not a Notion page id: $raw_page"
 
 payload=$(jq -n --arg s "$status" '{properties: {"Status": {status: {name: $s}}}}')
 
 resp=$(curl -sS --max-time 20 -X PATCH "https://api.notion.com/v1/pages/$page" \
-  -H "Authorization: Bearer $NOTION_TOKEN" \
+  -H @"$AUTH" \
   -H "Notion-Version: $NOTION_VERSION" \
   -H "Content-Type: application/json" \
   -d "$payload") || die "could not reach Notion"

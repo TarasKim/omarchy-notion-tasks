@@ -212,13 +212,27 @@ Panel {
     fetcher.running = true
   }
 
+  // omarchy-launch-webapp opens the page as a Chromium --app window, so a task
+  // lands in the same chrome-less surface as the installed Notion app rather
+  // than a browser tab.
+  //
+  // The URL is never spliced into the command line. It comes from Notion, which
+  // means anyone who can add a row to a shared board writes part of it; that it
+  // arrives slug-safe today is a property of Notion's title mangling, not a
+  // guarantee. It travels as a positional parameter instead, which bash expands
+  // without re-tokenizing — the shape Commons/Util.qml recommends for anything
+  // built from input. The login shell is kept because open-task.sh needs the
+  // session PATH to find omarchy-launch-webapp and hyprctl.
   function openUrl(url) {
-    if (!url || !bar || typeof bar.run !== "function") return
-    // omarchy-launch-webapp opens the page as a Chromium --app window, so a
-    // task lands in the same chrome-less surface as the installed Notion app
-    // rather than a browser tab. Notion URLs are alphanumeric plus / and -,
-    // so single quotes are enough.
-    bar.run(openCommand + " '" + String(url) + "'")
+    if (!url) return
+    var target = String(url)
+    if (openCommandSetting === "") {
+      Quickshell.execDetached(["bash", "-lc", 'exec bash "$@"', "bash", openScript, target])
+      return
+    }
+    // A configured openCommand is a shell fragment by design ("xdg-open",
+    // "flatpak run … --"), so it stays shell; only the URL is quarantined.
+    Quickshell.execDetached(["bash", "-lc", openCommandSetting + ' "$@"', "bash", target])
   }
 
   function openTask(task) {

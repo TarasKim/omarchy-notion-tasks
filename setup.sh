@@ -13,6 +13,7 @@ NOTION_VERSION="2022-06-28"
 ENV_FILE="$HOME/.config/omarchy/notion-tasks.env"
 CONFIG_FILE="$HOME/.config/omarchy/notion-tasks.json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$HERE/notion-lib.sh"
 
 die() { printf '\n%s\n' "$1" >&2; exit 1; }
 say() { printf '%s\n' "$1"; }
@@ -22,12 +23,16 @@ for c in jq curl gum; do
   command -v "$c" >/dev/null 2>&1 || die "$c is required but not installed."
 done
 
+[[ -f $LIB ]] || die "missing notion-lib.sh next to setup.sh"
+# shellcheck source=notion-lib.sh
+NOTION_ENV_FILE="$ENV_FILE"; source "$LIB"
+
 TMP=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 api() {
   curl -fsS --max-time 20 "https://api.notion.com/v1/$1" \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @"$AUTH" \
     -H "Notion-Version: $NOTION_VERSION" "${@:2}"
 }
 
@@ -48,12 +53,8 @@ valid token.
 TXT
 
 TOKEN=""
-if [[ -f $ENV_FILE ]]; then
-  # shellcheck source=/dev/null
-  set -a; source "$ENV_FILE"; set +a
-  if [[ -n ${NOTION_TOKEN:-} ]] && gum confirm "Reuse the token already in $ENV_FILE?"; then
-    TOKEN="$NOTION_TOKEN"
-  fi
+if existing=$(notion_read_token) && gum confirm "Reuse the token already in $ENV_FILE?"; then
+  TOKEN="$existing"
 fi
 
 if [[ -z $TOKEN ]]; then
@@ -61,9 +62,13 @@ if [[ -z $TOKEN ]]; then
   [[ -n $TOKEN ]] || die "No token given."
 fi
 
+# From here the token reaches curl only through a file. A header spelled out
+# on the command line is readable by every account on the machine via /proc.
+AUTH=$(notion_auth_file "$TMP" "$TOKEN") || die "Could not stage the auth header."
+
 gum spin --title "Checking the token..." -- \
   curl -fsS --max-time 20 "https://api.notion.com/v1/users/me" \
-    -H "Authorization: Bearer $TOKEN" -H "Notion-Version: $NOTION_VERSION" \
+    -H @"$AUTH" -H "Notion-Version: $NOTION_VERSION" \
     -o "$TMP/me.json" \
   || die "Notion rejected that token."
 say "Connected as integration \"$(jq -r '.name // "unnamed"' "$TMP/me.json")\"."
@@ -91,7 +96,7 @@ fi
 head2 "3. Which databases are task boards?"
 gum spin --title "Looking for databases shared with the integration..." -- \
   curl -fsS --max-time 20 -X POST "https://api.notion.com/v1/search" \
-    -H "Authorization: Bearer $TOKEN" -H "Notion-Version: $NOTION_VERSION" \
+    -H @"$AUTH" -H "Notion-Version: $NOTION_VERSION" \
     -H "Content-Type: application/json" \
     -d '{"filter":{"value":"database","property":"object"},"page_size":100}' \
     -o "$TMP/search.json" \

@@ -80,12 +80,35 @@ the bar layout in `~/.config/omarchy/shell.json`, and `omarchy restart shell`.
 
 | File | Contents |
 |---|---|
-| `~/.config/omarchy/notion-tasks.env` | `NOTION_TOKEN`, `chmod 600` |
+| `~/.config/omarchy/notion-tasks.env` | `NOTION_TOKEN`, mode 600 |
 | `~/.config/omarchy/notion-tasks.json` | which boards, in display order |
-| `~/.local/state/omarchy/notion-tasks.json` | the cache the widget reads |
+| `~/.local/state/omarchy/notion-tasks.json` | the cache the widget reads, mode 600 |
 
 The token lives apart from the config on purpose: the config is safe to share
-or commit, and the secret is not.
+or commit, and the secret is not. The cache is mode 600 as well — it is not a
+secret, but it is every open task you have, titles included.
+
+### How the token is handled
+
+Nothing here is exotic, but it is worth being able to check:
+
+- It is **never passed to `curl` on the command line.** `/proc/<pid>/cmdline` is
+  world-readable on a stock kernel, so an `Authorization:` header spelled out as
+  an argument is readable by every account on the machine for as long as the
+  request runs — which, for a five-minute refresh, is most of the time. The
+  header is written to a file inside a `mktemp -d` (mode 700) and passed as
+  `-H @file`. See `notion_auth_file` in `notion-lib.sh`.
+- The env file is **read, not sourced.** `source` executes it, so a stray
+  backtick from a bad paste would run as you. `notion_read_token` parses it.
+- Ids from the config reach a request path and a filename, so they are checked
+  against `^[0-9a-f]{32}$` first.
+- The task URL is **never spliced into a shell command.** It is Notion-supplied,
+  so it travels as a positional parameter that bash expands without
+  re-tokenizing (`Panel.qml`, `openUrl`).
+
+The integration is yours, created in your own workspace, and only reaches the
+boards you explicitly share with it. Nothing is sent anywhere except
+`api.notion.com`.
 
 ## Keys
 
@@ -266,6 +289,7 @@ keys together.
 | File | Role |
 |---|---|
 | `setup.sh` | interactive: token, identity, board selection |
+| `notion-lib.sh` | token reading and auth handling, shared by the four scripts |
 | `fetch.sh` | reads every board, writes the cache |
 | `notion.jq` | the schema inference, shared by fetch and setup |
 | `create-task.sh` | quick capture |
