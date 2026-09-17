@@ -42,14 +42,17 @@ def pageid:
   if type == "string" and (gsub("-"; "") | test("^[0-9a-fA-F]{32}$"))
   then (gsub("-"; "") | ascii_downcase) else "" end;
 
-# Only an https Notion page URL survives. This is the same test open-task.sh
-# applies before it will open anything and Model.js applies before it will
-# hand one to a process: a URL that has passed all three has been checked on
-# every path that can reach a command line.
+# Only an https Notion page URL survives. Notion serves pages from
+# app.notion.com today and from notion.so historically, and a cache written by
+# an older version still holds the old host, so both are allowed — and nothing
+# else is. This is the same test open-task.sh applies before it will open
+# anything and Model.js applies before it will hand one to a process: a URL
+# that has passed all three has been checked on every path that can reach a
+# command line.
 def pageurl:
   if type == "string"
      and (length <= LEN_URL)
-     and test("^https://(www\\.)?notion\\.so/[A-Za-z0-9._~%/?=&#+-]*$")
+     and test("^https://(www\\.|app\\.)?notion\\.(so|com)/[A-Za-z0-9._~%/?=&#+-]*$")
      and test("[0-9a-fA-F]{32}")
   then . else "" end;
 

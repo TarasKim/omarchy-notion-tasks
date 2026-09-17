@@ -31,7 +31,7 @@ URL="${1:-}"
 # at the end of every page and database URL. Anything else — another host, a
 # scheme that is not https, a shell metacharacter, whitespace — is refused
 # rather than handed to a launcher.
-[[ $URL =~ ^https://(www\.)?notion\.so/[A-Za-z0-9._~%/?=\&#+-]*$ ]] \
+[[ $URL =~ ^https://(www\.|app\.)?notion\.(so|com)/[A-Za-z0-9._~%/?=\&#+-]*$ ]] \
   || { echo "open-task.sh: that is not a Notion page url" >&2; exit 1; }
 
 page_id=$(grep -oE '[0-9a-f]{32}' <<<"${URL,,}" | tail -1)

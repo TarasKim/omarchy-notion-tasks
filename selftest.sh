@@ -154,6 +154,20 @@ is "ranks are numbers"         "number" "$(jq -r '.tasks[1].rank | type' "$SANDB
 is "\"yes\" is not true"       "false" "$(jq -r '.tasks[1].mine' "$SANDBOX/clean.json")"
 is "orphans and rubbish gone"  2   "$(jq '.tasks | length' "$SANDBOX/clean.json")"
 
+# The host Notion actually serves from has to survive the cache filter too:
+# when it did not, every task URL in the cache was blanked and no row in the
+# popup would open.
+jq -n '{sources: [{key: "k", label: "L", database: "11111111222233334444555555555555"}],
+        tasks: [{name: "live host", source: "k", url: "https://app.notion.com/p/Task-aaaaaaaabbbbccccddddeeeeeeeeeeee"},
+                {name: "old host",  source: "k", url: "https://www.notion.so/Task-aaaaaaaabbbbccccddddeeeeeeeeeeee"},
+                {name: "not notion", source: "k", url: "https://notion.so.example.com/aaaaaaaabbbbccccddddeeeeeeeeeeee"}]}' \
+  | jq -f <(cat "$HERE/bounds.jq"; echo bounded) >"$SANDBOX/hosts.json"
+is "app.notion.com url survives"  "https://app.notion.com/p/Task-aaaaaaaabbbbccccddddeeeeeeeeeeee" \
+   "$(jq -r '.tasks[0].url' "$SANDBOX/hosts.json")"
+is "notion.so url survives"       "https://www.notion.so/Task-aaaaaaaabbbbccccddddeeeeeeeeeeee" \
+   "$(jq -r '.tasks[1].url' "$SANDBOX/hosts.json")"
+is "look-alike host dropped"      "" "$(jq -r '.tasks[2].url' "$SANDBOX/hosts.json")"
+
 head2 "read-cache.sh: the widget's only way in"
 
 cp "$SANDBOX/hostile.json" "$NOTION_STATE_DIR/cache.json"; chmod 600 "$NOTION_STATE_DIR/cache.json"
@@ -211,8 +225,13 @@ opens() {
   is "$([[ $want == yes ]] && echo opens || echo refuses): ${url:0:52}" "$want" "$got"
 }
 ID=aaaaaaaabbbbccccddddeeeeeeeeeeee
-opens "https://www.notion.so/Task-$ID"            yes
-opens "https://notion.so/$ID"                      yes
+# app.notion.com is the host Notion actually serves pages from; notion.so is
+# the historical one that older caches still hold. Both must open, or every
+# row in the popup becomes unclickable -- which is exactly what happened once.
+opens "https://app.notion.com/p/Task-$ID"           yes
+opens "https://www.notion.so/Task-$ID"              yes
+opens "https://notion.so/$ID"                       yes
+opens "https://notion.com/$ID"                      yes
 opens "http://www.notion.so/$ID"                   no
 opens "https://notion.so.example.com/$ID"          no
 opens "https://www.notion.so/x\$(touch $SANDBOX/pwned2)$ID" no

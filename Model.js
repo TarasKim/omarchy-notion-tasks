@@ -68,14 +68,16 @@ function idOf(value) {
   return /^[0-9a-fA-F]{32}$/.test(s) ? s.toLowerCase() : ""
 }
 
-// The one URL shape this widget will hand to a process: https, Notion's own
-// host, and a page id in it. open-task.sh checks the same thing again at the
-// other end, because neither of them can see how the other was reached.
+// The one URL shape this widget will hand to a process: https, a Notion host,
+// and a page id in it. Notion serves pages from app.notion.com now and from
+// notion.so historically, so both are allowed and nothing else is.
+// open-task.sh checks the same thing again at the other end, because neither
+// of them can see how the other was reached.
 function safeUrl(value) {
   if (value === undefined || value === null) return ""
   var s = String(value)
   if (s.length > MAX_URL) return ""
-  if (!/^https:\/\/(www\.)?notion\.so\/[A-Za-z0-9._~%\/?=&#+-]*$/.test(s)) return ""
+  if (!/^https:\/\/(www\.|app\.)?notion\.(so|com)\/[A-Za-z0-9._~%\/?=&#+-]*$/.test(s)) return ""
   if (!/[0-9a-fA-F]{32}/.test(s)) return ""
   return s
 }
