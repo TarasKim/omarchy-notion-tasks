@@ -12,6 +12,83 @@
 var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+// ---- bounds -------------------------------------------------------------
+// The same ceilings bounds.jq applies on the way out of fetch.sh, applied
+// again on the way in. Not redundancy for its own sake: read-cache.sh is one
+// way into this model and read-cache.sh could be replaced, while this is the
+// long-lived process that sorts, groups and repeats over whatever it is
+// given. Below the parse boundary every string is of known length with no
+// control characters in it, every array is of known maximum size, and every
+// number is a number.
+
+var MAX_TEXT      = 300
+var MAX_SHORT     = 120
+var MAX_URL       = 512
+var MAX_SOURCES   = 24
+var MAX_TASKS     = 2000
+var MAX_STATUSES  = 60
+var MAX_PRIORITIES = 40
+var MAX_SELECTS   = 40
+var MAX_OPTIONS   = 200
+var MAX_RELATIONS = 8
+var MAX_RELATION_ROWS = 500
+var MAX_CACHE_CHARS = 4 * 1024 * 1024
+
+// Control characters, DEL and the C1 block, plus the Unicode line and
+// paragraph separators. Built from a string rather than written as a regex
+// literal so the escapes survive being copied around.
+var CONTROL_CHARS = new RegExp("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]", "g")
+
+// Text, cut to length, with all of those folded to spaces. Every dynamic Text
+// in the popup is textFormat: PlainText, so this is not about markup — it is
+// about one field being able to draw itself as several lines of UI, or as a
+// megabyte.
+function plain(value, limit) {
+  // Only text is text. A number is rendered as one; anything else — an object
+  // a hostile or broken cache put where a name belongs — becomes nothing,
+  // rather than the string "[object Object]" in the middle of a task list.
+  var s
+  if (typeof value === "string") s = value
+  else if (typeof value === "number" && isFinite(value)) s = String(value)
+  else return ""
+  if (s.length > limit) s = s.slice(0, limit)
+  return s.replace(CONTROL_CHARS, " ")
+}
+
+function numberOr(value, fallback) {
+  return (typeof value === "number" && isFinite(value)) ? value : fallback
+}
+
+function boolOf(value) { return value === true }
+
+// 32 hex digits, dashed or not, or nothing at all.
+function idOf(value) {
+  if (value === undefined || value === null) return ""
+  var s = String(value).replace(/-/g, "")
+  return /^[0-9a-fA-F]{32}$/.test(s) ? s.toLowerCase() : ""
+}
+
+// The one URL shape this widget will hand to a process: https, Notion's own
+// host, and a page id in it. open-task.sh checks the same thing again at the
+// other end, because neither of them can see how the other was reached.
+function safeUrl(value) {
+  if (value === undefined || value === null) return ""
+  var s = String(value)
+  if (s.length > MAX_URL) return ""
+  if (!/^https:\/\/(www\.)?notion\.so\/[A-Za-z0-9._~%\/?=&#+-]*$/.test(s)) return ""
+  if (!/[0-9a-fA-F]{32}/.test(s)) return ""
+  return s
+}
+
+function capped(value, limit) {
+  if (!Array.isArray(value)) return []
+  return value.length > limit ? value.slice(0, limit) : value
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
 // ---- sources ------------------------------------------------------------
 // `sources` is the ordered array from the cache. Order is the user's, set in
 // notion-tasks.json, and it drives three things at once: the sort, the order
@@ -320,9 +397,10 @@ function statusIndex(sources, task) {
 // before the first status change works.
 function taskId(task) {
   if (!task) return ""
-  if (task.id) return String(task.id).replace(/-/g, "")
+  var id = idOf(task.id)
+  if (id !== "") return id
   var m = String(task.url || "").match(/([0-9a-fA-F]{32})(?:\?|#|$)/)
-  return m ? m[1] : ""
+  return m ? m[1].toLowerCase() : ""
 }
 
 // ---- quick capture ------------------------------------------------------
@@ -411,14 +489,131 @@ function relationIdFor(rows, name) {
 
 // ---- cache --------------------------------------------------------------
 
+// One task, reduced to the fields this widget renders, each of them checked.
+// Anything else the document carried is dropped rather than carried around:
+// a field nothing reads is a field nothing bounds.
+function normalizeTask(raw) {
+  if (!isObject(raw)) return null
+  var name = plain(raw.name, MAX_TEXT)
+  if (name === "") return null
+  return {
+    id: idOf(raw.id),
+    name: name,
+    status: plain(raw.status, MAX_SHORT),
+    statusGroup: plain(raw.statusGroup, MAX_SHORT),
+    priority: plain(raw.priority, MAX_SHORT),
+    rank: numberOr(raw.rank, 0),
+    due: typeof raw.due === "string" ? plain(raw.due, 64) : null,
+    url: safeUrl(raw.url),
+    source: plain(raw.source, 64),
+    mine: boolOf(raw.mine)
+  }
+}
+
+function normalizeStrings(list, limit, itemLimit) {
+  var raw = capped(list, limit), out = []
+  for (var i = 0; i < raw.length; i++) {
+    var s = plain(raw[i], itemLimit)
+    if (s !== "") out.push(s)
+  }
+  return out
+}
+
+function normalizeMap(map, limit, valueLimit, itemLimit) {
+  var out = {}, n = 0
+  if (!isObject(map)) return out
+  for (var key in map) {
+    if (n >= limit) break
+    var k = plain(key, MAX_SHORT)
+    if (k === "") continue
+    out[k] = normalizeStrings(map[key], valueLimit, itemLimit)
+    n++
+  }
+  return out
+}
+
+function normalizeRelations(map) {
+  var out = {}, n = 0
+  if (!isObject(map)) return out
+  for (var key in map) {
+    if (n >= MAX_RELATIONS) break
+    var k = plain(key, MAX_SHORT)
+    if (k === "") continue
+    var rows = capped(map[key], MAX_RELATION_ROWS), kept = []
+    for (var i = 0; i < rows.length; i++) {
+      if (!isObject(rows[i])) continue
+      var id = idOf(rows[i].id), label = plain(rows[i].name, MAX_SHORT)
+      if (id !== "" && label !== "") kept.push({ id: id, name: label })
+    }
+    out[k] = kept
+    n++
+  }
+  return out
+}
+
+function normalizeSource(raw) {
+  if (!isObject(raw)) return null
+  var key = plain(raw.key, 64)
+  if (key === "" || idOf(raw.database) === "") return null
+  var props = isObject(raw.props) ? raw.props : {}
+  var statuses = capped(raw.statuses, MAX_STATUSES), keptStatuses = []
+  for (var i = 0; i < statuses.length; i++) {
+    if (!isObject(statuses[i])) continue
+    var name = plain(statuses[i].name, MAX_SHORT)
+    if (name !== "") keptStatuses.push({ name: name, group: plain(statuses[i].group, MAX_SHORT) })
+  }
+  return {
+    key: key,
+    label: plain(raw.label, MAX_SHORT),
+    badge: plain(raw.badge, 8),
+    database: idOf(raw.database),
+    url: safeUrl(raw.url),
+    onlyMine: boolOf(raw.onlyMine),
+    complete: plain(raw.complete, MAX_SHORT),
+    props: {
+      title: plain(props.title, MAX_SHORT),
+      status: plain(props.status, MAX_SHORT),
+      date: plain(props.date, MAX_SHORT),
+      priority: plain(props.priority, MAX_SHORT),
+      owner: plain(props.owner, MAX_SHORT),
+      selects: normalizeStrings(props.selects, MAX_SELECTS, MAX_SHORT)
+    },
+    statuses: keptStatuses,
+    priorities: normalizeStrings(raw.priorities, MAX_PRIORITIES, MAX_SHORT),
+    selectOptions: normalizeMap(raw.selectOptions, MAX_SELECTS, MAX_OPTIONS, MAX_SHORT),
+    relations: normalizeRelations(raw.relations)
+  }
+}
+
 function parseCache(text) {
+  var s = text === undefined || text === null ? "" : String(text)
+  // Weighed before it is parsed: JSON.parse on an arbitrarily large string is
+  // the one step here with no natural ceiling of its own.
+  if (s.length > MAX_CACHE_CHARS)
+    return { tasks: [], sources: [], updated: "", error: "cache too large" }
   try {
-    var o = JSON.parse(text || "{}")
+    var o = JSON.parse(s || "{}")
+    if (!isObject(o)) throw new Error("not an object")
+
+    var sources = [], rawSources = capped(o.sources, MAX_SOURCES)
+    for (var i = 0; i < rawSources.length; i++) {
+      var src = normalizeSource(rawSources[i])
+      if (src) sources.push(src)
+    }
+
+    var tasks = [], rawTasks = capped(o.tasks, MAX_TASKS)
+    for (var j = 0; j < rawTasks.length; j++) {
+      var task = normalizeTask(rawTasks[j])
+      // A task whose board did not survive has nothing to be grouped, sorted
+      // or coloured against.
+      if (task && sourceFor(sources, task)) tasks.push(task)
+    }
+
     return {
-      tasks: Array.isArray(o.tasks) ? o.tasks : [],
-      sources: Array.isArray(o.sources) ? o.sources : [],
-      updated: o.updated || "",
-      error: o.error || ""
+      tasks: tasks,
+      sources: sources,
+      updated: plain(o.updated, 64),
+      error: plain(o.error, MAX_TEXT)
     }
   } catch (e) {
     return { tasks: [], sources: [], updated: "", error: "cache unreadable" }
@@ -426,11 +621,16 @@ function parseCache(text) {
 }
 
 // "17:42" from the ISO stamp fetch.sh writes, for the popup footer.
+//
+// That footer is the one StyledText in the widget, which makes this the one
+// cache-derived string that reaches a markup-aware sink. So the guarantee is
+// made here and checked here: two literals, or four digits and a colon.
 function updatedLabel(iso) {
   if (!iso) return "never"
-  var d = new Date(String(iso))
+  var d = new Date(String(iso).slice(0, 64))
   if (isNaN(d.getTime())) return "unknown"
   var hh = ("0" + d.getHours()).slice(-2)
   var mm = ("0" + d.getMinutes()).slice(-2)
-  return hh + ":" + mm
+  var out = hh + ":" + mm
+  return /^[0-9]{2}:[0-9]{2}$/.test(out) ? out : "unknown"
 }

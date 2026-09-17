@@ -15,6 +15,9 @@ Text {
 
   signal triggered()
 
+  // The glyph is a literal, but this is a Text sink like any other and the
+  // default is AutoText; a component is not the place to leave that open.
+  textFormat: Text.PlainText
   anchors.verticalCenter: parent ? parent.verticalCenter : undefined
   text: glyph
   color: stepEnabled ? (hit.containsMouse ? foreground : dim) : Qt.darker(dim, 1.4)

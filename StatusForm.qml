@@ -39,6 +39,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     width: parent.width
     text: form.task && form.task.name ? form.task.name : ""
     color: form.foreground
@@ -50,6 +51,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     width: parent.width
     text: "now  ·  " + (form.currentStatus !== "" ? form.currentStatus : "unset")
     color: form.dim
@@ -83,6 +85,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     visible: form.errorText !== ""
     width: parent.width
     text: form.errorText
@@ -93,6 +96,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     width: parent.width
     text: form.busy
           ? "Saving…"

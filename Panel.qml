@@ -28,6 +28,9 @@ Panel {
   property var sources: []
   property string updatedAt: ""
   property string cacheError: ""
+  // Held only between the collector finishing and onExited deciding whether
+  // the run was good; cleared immediately afterwards.
+  property string cacheText: ""
   property string fetchError: ""
   property bool fetching: false
   property bool capturing: false
@@ -77,7 +80,10 @@ Panel {
 
   function loadThemeColors(raw) {
     var parsed = {}
-    var lines = String(raw || "").split("\n")
+    // A theme's colors.toml is written by omarchy, but it is still a file on
+    // disk being parsed inside a long-lived process, so the work it can cause
+    // is bounded: 256 KiB, the first 2000 lines, and only #rrggbb values.
+    var lines = String(raw || "").slice(0, 262144).split("\n").slice(0, 2000)
     for (var i = 0; i < lines.length; i++) {
       var m = lines[i].match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["\']?(#[0-9A-Fa-f]{6})/)
       if (m) parsed[m[1]] = m[2]
@@ -119,7 +125,9 @@ Panel {
     groupBySource: groupBySource
   })
 
-  readonly property string cachePath: Quickshell.env("HOME") + "/.local/state/omarchy/notion-tasks.json"
+  // The widget opens no files of its own; read-cache.sh does it, and says
+  // why in its own comment.
+  readonly property string readScript: String(Qt.resolvedUrl("read-cache.sh")).replace(/^file:\/\//, "")
   readonly property string fetchScript: String(Qt.resolvedUrl("fetch.sh")).replace(/^file:\/\//, "")
   readonly property string createScript: String(Qt.resolvedUrl("create-task.sh")).replace(/^file:\/\//, "")
   readonly property string statusScript: String(Qt.resolvedUrl("set-status.sh")).replace(/^file:\/\//, "")
@@ -207,8 +215,10 @@ Panel {
 
   function refresh() {
     themeFile.reload()
+    readCache()
     if (fetcher.running) return
     fetching = true
+    fetchGuard.restart()
     fetcher.running = true
   }
 
@@ -216,16 +226,23 @@ Panel {
   // lands in the same chrome-less surface as the installed Notion app rather
   // than a browser tab.
   //
-  // The URL is never spliced into the command line. It comes from Notion, which
-  // means anyone who can add a row to a shared board writes part of it; that it
-  // arrives slug-safe today is a property of Notion's title mangling, not a
-  // guarantee. It travels as a positional parameter instead, which bash expands
-  // without re-tokenizing — the shape Commons/Util.qml recommends for anything
-  // built from input. The login shell is kept because open-task.sh needs the
-  // session PATH to find omarchy-launch-webapp and hyprctl.
+  // The URL is checked before it is used and never spliced into the command
+  // line. It comes from Notion, which means anyone who can add a row to a
+  // shared board writes part of it; that it arrives slug-safe today is a
+  // property of Notion's title mangling, not a guarantee. So it is held to a
+  // shape first, and then travels as a positional parameter, which bash
+  // expands without re-tokenizing — the shape Commons/Util.qml recommends for
+  // anything built from input. The login shell is kept because open-task.sh
+  // needs the session PATH to find omarchy-launch-webapp and hyprctl.
   function openUrl(url) {
-    if (!url) return
-    var target = String(url)
+    // The URL comes out of the cache, which describes rows other people can
+    // edit. Model.safeUrl is the same check open-task.sh makes again at the
+    // other end: https, Notion's own host, a page id in it, nothing else.
+    var target = Model.safeUrl(url)
+    if (target === "") {
+      root.fetchError = "That task has no Notion link this can open."
+      return
+    }
     if (openCommandSetting === "") {
       Quickshell.execDetached(["bash", "-lc", 'exec bash "$@"', "bash", openScript, target])
       return
@@ -271,6 +288,17 @@ Panel {
     if (creating) return
     var title = String(captureForm.titleText).trim()
     if (title === "") { captureError = "A task needs a title."; return }
+    // create-task.sh refuses the same things, but the argv is assembled here:
+    // saying so before spawning anything is both faster and one fewer way for
+    // an unbounded field to reach a command line.
+    if (title.length > Model.MAX_TEXT) {
+      captureError = "That title is too long (limit " + Model.MAX_TEXT + " characters)."
+      return
+    }
+    if (String(captureForm.dueText).length > 64) {
+      captureError = "That due date is too long."
+      return
+    }
 
     var args = ["bash", createScript, "--dest", captureForm.dest, "--title", title]
 
@@ -288,6 +316,7 @@ Panel {
     captureError = ""
     creating = true
     creator.command = args
+    createGuard.restart()
     creator.running = true
   }
 
@@ -346,6 +375,7 @@ Panel {
     statusPendingName = name
     statusBusy = true
     statusSetter.command = ["bash", statusScript, "--id", id, "--status", name]
+    statusGuard.restart()
     statusSetter.running = true
   }
 
@@ -466,14 +496,62 @@ Panel {
     onLoadFailed: root.loadThemeColors("")
   }
 
-  FileView {
-    id: cacheFile
-    path: root.cachePath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: root.applyCache(text())
-    onLoadFailed: root.applyCache("")
+  // Reading the cache is a process, not a FileView.
+  //
+  // A FileView opens whatever the name resolves to, with no deadline, no way
+  // to refuse a FIFO or a symlink and no ceiling on what it reads — inside
+  // the long-lived shell. read-cache.sh does all three and normalises the
+  // document on the way past; Model.parseCache weighs and re-checks it here.
+  Process {
+    id: cacheReader
+    command: ["bash", root.readScript]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.cacheText = String(text || "")
+    }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function (exitCode) {
+      cacheGuard.running = false
+      if (exitCode === 0 && root.cacheText !== "") {
+        root.applyCache(root.cacheText)
+      } else if (root.tasks.length === 0) {
+        // Nothing to keep, so say why. With a list already on screen a failed
+        // read waits for the next tick rather than blanking it.
+        root.cacheError = "Could not read the task cache."
+      }
+      root.cacheText = ""
+    }
+  }
+
+  Timer {
+    id: cacheGuard
+    interval: 30000
+    onTriggered: root.stopHelper(cacheReader, null)
+  }
+
+  function readCache() {
+    if (cacheReader.running) return
+    cacheText = ""
+    cacheGuard.restart()
+    cacheReader.running = true
+  }
+
+  // Every helper bounds itself (see notion_bound_run) and watches the process
+  // the panel is holding, so stopping that one brings the rest of its process
+  // group down with it. This is the panel's own backstop for a helper that
+  // somehow outlasts its own deadline.
+  function stopHelper(proc, message) {
+    if (!proc.running) return
+    proc.signal(15)
+    proc.running = false
+    if (message !== null) root.fetchError = message
+  }
+
+  // The helpers cap their own stderr at 4 KiB before it leaves them; this is
+  // the other end of the same rule, because the collector holding whatever
+  // arrives lives in the long-running shell.
+  function shortError(text) {
+    return Model.plain(String(text || "").trim(), 400)
   }
 
   Process {
@@ -481,16 +559,28 @@ Panel {
     command: ["bash", root.fetchScript]
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.fetchError = String(text || "").trim()
+      onStreamFinished: root.fetchError = root.shortError(text)
     }
     onExited: function (exitCode) {
+      fetchGuard.running = false
       root.fetching = false
       if (exitCode === 0) {
         root.fetchError = ""
-        cacheFile.reload()
+        root.readCache()
       } else if (root.fetchError === "") {
         root.fetchError = "fetch failed (exit " + exitCode + ")"
       }
+    }
+  }
+
+  // Past fetch.sh's own 240-second deadline, so this only ever fires for a
+  // helper that has stopped answering for its own bounds.
+  Timer {
+    id: fetchGuard
+    interval: 300000
+    onTriggered: {
+      root.fetching = false
+      root.stopHelper(fetcher, "The refresh took too long and was stopped.")
     }
   }
 
@@ -498,9 +588,10 @@ Panel {
     id: creator
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.captureError = String(text || "").trim()
+      onStreamFinished: root.captureError = root.shortError(text)
     }
     onExited: function (exitCode) {
+      createGuard.running = false
       root.creating = false
       if (exitCode === 0) {
         root.captureError = ""
@@ -508,11 +599,21 @@ Panel {
         captureForm.reset()
         keyCatcher.forceActiveFocus()
         // create-task.sh refreshes the cache itself; this just picks it up
-        // immediately rather than on the next watch tick.
-        cacheFile.reload()
+        // immediately rather than on the next tick.
+        root.readCache()
       } else if (root.captureError === "") {
         root.captureError = "Could not create the task (exit " + exitCode + ")."
       }
+    }
+  }
+
+  Timer {
+    id: createGuard
+    interval: 180000
+    onTriggered: {
+      root.creating = false
+      root.captureError = "That took too long and was stopped."
+      root.stopHelper(creator, null)
     }
   }
 
@@ -520,9 +621,10 @@ Panel {
     id: statusSetter
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.statusError = String(text || "").trim()
+      onStreamFinished: root.statusError = root.shortError(text)
     }
     onExited: function (exitCode) {
+      statusGuard.running = false
       root.statusBusy = false
       root.statusPendingName = ""
       if (exitCode === 0) {
@@ -531,11 +633,22 @@ Panel {
         root.statusTask = null
         keyCatcher.forceActiveFocus()
         // set-status.sh refreshes the cache itself; this just picks it up now
-        // rather than on the next watch tick.
-        cacheFile.reload()
+        // rather than on the next tick.
+        root.readCache()
       } else if (root.statusError === "") {
         root.statusError = "Could not change the status (exit " + exitCode + ")."
       }
+    }
+  }
+
+  Timer {
+    id: statusGuard
+    interval: 180000
+    onTriggered: {
+      root.statusBusy = false
+      root.statusPendingName = ""
+      root.statusError = "That took too long and was stopped."
+      root.stopHelper(statusSetter, null)
     }
   }
 
@@ -691,6 +804,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.problem !== ""
               width: parent.width
               text: root.problem
@@ -727,6 +841,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.rows.length === 0
                 width: parent.width
                 text: root.sources.length === 0
@@ -853,6 +968,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.rangeText + "   ·   page " + (root.page + 1) + " of " + root.pageCount
                   color: root.dim
@@ -872,6 +988,7 @@ Panel {
 
               // Which number key belongs to which board, and which are off.
               Text {
+                textFormat: Text.PlainText
                 visible: root.sources.length > 1
                 width: parent.width
                 text: {
@@ -892,9 +1009,11 @@ Panel {
                 width: parent.width
                 // The keys carry the weight, not their descriptions: in one
                 // dim run of caption text the eye needs somewhere to land, and
-                // what you are looking for here is always the key. Every part
-                // of this string is a literal, so StyledText has nothing to
-                // escape — the board names above are user text and stay plain.
+                // what you are looking for here is always the key. The only
+                // non-literal in it is Model.updatedLabel, which returns a
+                // clock time or one of two words and nothing else — every
+                // other string in this popup, board names included, goes to a
+                // PlainText sink.
                 textFormat: Text.StyledText
                 text: (root.statusBusy ? "Saving…"
                        : root.fetching ? "Refreshing…"

@@ -113,6 +113,7 @@ Item {
 
     Text {
       id: chip
+      textFormat: Text.PlainText
       width: Style.space(56)
       anchors.verticalCenter: parent.verticalCenter
       text: row.prio.tag
@@ -133,6 +134,7 @@ Item {
 
     Text {
       id: name
+      textFormat: Text.PlainText
       width: Math.max(0, content.width - chip.width
                          - (statusText.visible ? statusText.implicitWidth + content.spacing : 0)
                          - (badge.visible ? badge.implicitWidth + content.spacing : 0)
@@ -149,6 +151,7 @@ Item {
 
     Text {
       id: statusText
+      textFormat: Text.PlainText
       visible: row.showStatus && row.status.label !== "" && row.status.key !== "todo"
       anchors.verticalCenter: parent.verticalCenter
       text: row.status.label
@@ -159,6 +162,7 @@ Item {
 
     Text {
       id: badge
+      textFormat: Text.PlainText
       visible: row.showBadge && row.sourceTag !== ""
       anchors.verticalCenter: parent.verticalCenter
       text: row.sourceTag
@@ -169,6 +173,7 @@ Item {
 
     Text {
       id: due
+      textFormat: Text.PlainText
       visible: text !== ""
       anchors.verticalCenter: parent.verticalCenter
       text: row.pending ? row.pendingLabel : Model.dueLabel(row.task)

@@ -194,6 +194,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     visible: form.errorText !== ""
     width: parent.width
     text: form.errorText
@@ -228,6 +229,7 @@ Column {
   }
 
   Text {
+    textFormat: Text.PlainText
     width: parent.width
     text: {
       var label = ""

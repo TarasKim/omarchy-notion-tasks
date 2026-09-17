@@ -13,17 +13,39 @@
 # --due accepts today | tomorrow | +Nd | YYYY-MM-DD.
 # Prints the created page URL on success; anything on stderr is shown by the
 # widget, so messages here are user-facing.
+#
+# Every argument is bounded before it is used. They arrive from a form in a
+# long-lived process, and an argv is the one payload that cannot be trimmed
+# after the fact — so the limits are applied here, at the edge, and again as a
+# ceiling on the assembled request body.
 
 set -uo pipefail
 
 NOTION_VERSION="2022-06-28"
-ENV_FILE="$HOME/.config/omarchy/notion-tasks.env"
-CONFIG_FILE="$HOME/.config/omarchy/notion-tasks.json"
-CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/notion-tasks.json"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/notion-lib.sh"
 
+[[ -f $LIB ]] || { echo "missing notion-lib.sh next to create-task.sh" >&2; exit 1; }
+# shellcheck source=notion-lib.sh
+source "$LIB"
+notion_bound_run "${NOTION_CREATE_DEADLINE:-120}" "$HERE/create-task.sh" "$@"
+
 die() { echo "$1" >&2; exit 1; }
+
+MAX_TITLE=300
+MAX_NOTES=2000
+MAX_FIELD=200
+MAX_PAIRS=20
+MAX_PAYLOAD_BYTES=32768
+
+# A field that arrived over an argv, cut to length and refused if it carries
+# anything that is not text.
+field() {
+  local name="$1" value="$2" max="$3"
+  (( ${#value} <= max )) || die "$name is too long (limit $max characters)"
+  [[ $value != *[$'\x01'-$'\x1f\x7f']* ]] || die "$name contains control characters"
+  printf '%s' "$value"
+}
 
 dest="" title="" priority="" due="" notes=""
 selects=() relations=()
@@ -36,37 +58,45 @@ while (($#)); do
     --notes)    notes="${2:-}"; shift 2 ;;
     --select)   selects+=("${2:-}"); shift 2 ;;
     --relation) relations+=("${2:-}"); shift 2 ;;
-    *) die "unknown argument: $1" ;;
+    *) die "unknown argument" ;;
   esac
 done
 
 [[ -n $title ]] || die "task needs a title"
 [[ -n $dest ]]  || die "task needs a destination project"
+[[ $dest =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "that is not a project key"
+(( ${#selects[@]} <= MAX_PAIRS )) || die "too many select fields"
+(( ${#relations[@]} <= MAX_PAIRS )) || die "too many relation fields"
+
+title=$(field "The title" "$title" $MAX_TITLE) || exit 1
+notes=$(field "The notes" "$notes" $MAX_NOTES) || exit 1
+priority=$(field "The priority" "$priority" $MAX_FIELD) || exit 1
+due=$(field "The due date" "$due" 64) || exit 1
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 command -v curl >/dev/null 2>&1 || die "curl is not installed"
-[[ -f $LIB ]] || die "missing notion-lib.sh next to create-task.sh"
-[[ -f $ENV_FILE ]] || die "missing $ENV_FILE"
 
-# shellcheck source=notion-lib.sh
-NOTION_ENV_FILE="$ENV_FILE"; source "$LIB"
-NOTION_TOKEN=$(notion_read_token) || die "NOTION_TOKEN not set"
-
+umask 077
 TMP=$(mktemp -d) || die "could not create a temp directory"
-trap 'rm -rf "$TMP"' EXIT
+notion_trap_group "$TMP"
+
+NOTION_TOKEN=$(notion_read_token) || die "no usable NOTION_TOKEN — run setup.sh"
 # The token travels to curl in a file, never as an argument. See notion-lib.sh.
 AUTH=$(notion_auth_file "$TMP" "$NOTION_TOKEN") || die "could not stage the auth header"
 
 # The cache carries the inferred schema, so creating a task costs no extra
-# schema request. It is written by fetch.sh before the widget can offer a
-# capture form at all, so it is always there by the time this runs.
-[[ -s $CACHE ]] || die "no cache yet — run fetch.sh first"
+# schema request. It is read the same way fetch.sh writes it: through a
+# verified descriptor on its own directory, with a ceiling on its size.
+notion_open_dir "$NOTION_STATE_DIR" STATE_FD || die "no cache yet — run fetch.sh first"
+CACHE="$TMP/cache.json"
+notion_read_file "$(notion_dir_at "$STATE_FD")/$NOTION_CACHE_NAME" "$NOTION_MAX_CACHE_BYTES" >"$CACHE" \
+  || die "no usable cache yet — run fetch.sh first"
+
 src=$(jq -c --arg k "$dest" '.sources[]? | select(.key == $k)' "$CACHE")
-[[ -n $src ]] || die "unknown project: $dest"
+[[ -n $src ]] || die "unknown project"
 
 db=$(jq -r '.database // ""' <<<"$src")
-[[ -n $db ]] || die "project $dest has no database id"
-db=$(notion_normalize_id "$db") || die "project $dest has a malformed database id"
+db=$(notion_normalize_id "$db") || die "that project has a malformed database id"
 
 pTitle=$(jq -r '.props.title // ""' <<<"$src")
 pStatus=$(jq -r '.props.status // ""' <<<"$src")
@@ -75,7 +105,7 @@ pPrio=$(jq -r '.props.priority // ""' <<<"$src")
 pOwner=$(jq -r '.props.owner // ""' <<<"$src")
 me=$(jq -r '.me // ""' "$CACHE")
 
-[[ -n $pTitle ]] || die "project $dest has no title property"
+[[ -n $pTitle ]] || die "that project has no title property"
 
 # The first status the board files under To-do — its own idea of "new", which
 # is "To Do" on one board here and "Not started" on the other.
@@ -96,7 +126,8 @@ resolve_due() {
 
 due_date=""
 if [[ -n $due ]]; then
-  due_date=$(resolve_due "$due") || die "could not read due date: $due"
+  due_date=$(resolve_due "$due") || die "could not read that due date"
+  [[ $due_date =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "could not read that due date"
 fi
 
 props=$(jq -n --arg t "$title" --arg p "$pTitle" '{ ($p): { title: [ { text: { content: $t } } ] } }')
@@ -117,35 +148,51 @@ add() { props=$(jq "$@" <<<"$props"); }
   add --arg v "$notes" '. + {"Notes": {rich_text: [{text: {content: $v}}]}}'
 
 for pair in ${selects+"${selects[@]}"}; do
-  [[ $pair == *=* ]] || die "--select needs NAME=VALUE, got: $pair"
-  add --arg k "${pair%%=*}" --arg v "${pair#*=}" '. + {($k): {select: {name: $v}}}'
+  [[ $pair == *=* ]] || die "a select field was malformed"
+  name=$(field "A select field name" "${pair%%=*}" $MAX_FIELD) || exit 1
+  value=$(field "A select field value" "${pair#*=}" $MAX_FIELD) || exit 1
+  [[ -n $name ]] || die "a select field was malformed"
+  add --arg k "$name" --arg v "$value" '. + {($k): {select: {name: $v}}}'
 done
 
 for pair in ${relations+"${relations[@]}"}; do
-  [[ $pair == *=* ]] || die "--relation needs NAME=PAGE_ID, got: $pair"
-  add --arg k "${pair%%=*}" --arg v "${pair#*=}" '. + {($k): {relation: [{id: $v}]}}'
+  [[ $pair == *=* ]] || die "a relation field was malformed"
+  name=$(field "A relation field name" "${pair%%=*}" $MAX_FIELD) || exit 1
+  # The other half is a page id, so it is checked as one rather than as text.
+  value=$(notion_normalize_id "${pair#*=}") || die "a relation points at something that is not a page id"
+  [[ -n $name ]] || die "a relation field was malformed"
+  add --arg k "$name" --arg v "$value" '. + {($k): {relation: [{id: $v}]}}'
 done
 
-payload=$(jq -n --arg db "$db" --argjson props "$props" '{parent: {database_id: $db}, properties: $props}')
+PAYLOAD="$TMP/payload.json"
+jq -n --arg db "$db" --argjson props "$props" \
+  '{parent: {database_id: $db}, properties: $props}' >"$PAYLOAD" \
+  || die "could not build the request"
+(( $(stat -c '%s' "$PAYLOAD") <= MAX_PAYLOAD_BYTES )) || die "that task is too large to send"
 
-resp=$(curl -sS --max-time 20 -X POST "https://api.notion.com/v1/pages" \
+RESP="$TMP/resp.json"
+# -f is off here on purpose: Notion's own error body is the message worth
+# showing, and curl would throw it away. The size ceiling still applies.
+NOTION_CURL_FAIL_SOFT=1 notion_curl "$RESP" -X POST "https://api.notion.com/v1/pages" \
   -H @"$AUTH" \
   -H "Notion-Version: $NOTION_VERSION" \
   -H "Content-Type: application/json" \
-  -d "$payload") || die "could not reach Notion"
+  --data-binary @"$PAYLOAD" || die "could not reach Notion"
 
-if [[ $(jq -r '.object // ""' <<<"$resp") == "error" ]]; then
-  msg=$(jq -r '.message // "unknown error"' <<<"$resp")
-  if [[ $(jq -r '.code // ""' <<<"$resp") == "restricted_resource" ]]; then
+if [[ $(jq -r '.object // ""' "$RESP") == "error" ]]; then
+  msg=$(jq -r '(.message // "unknown error") | .[0:300]' "$RESP")
+  if [[ $(jq -r '.code // ""' "$RESP") == "restricted_resource" ]]; then
     msg="$msg (does the integration have Insert content capability?)"
   fi
   die "Notion rejected the task: $msg"
 fi
 
-url=$(jq -r '.url // ""' <<<"$resp")
-[[ -n $url ]] || die "Notion returned no page url"
+url=$(jq -r '.url // ""' "$RESP")
+[[ $url =~ ^https://(www\.)?notion\.so/[A-Za-z0-9._~%/?=\&#+-]{1,500}$ ]] \
+  || die "Notion returned no usable page url"
 
-# Refresh so the new task appears without waiting for the poll interval.
-bash "$HERE/fetch.sh" >/dev/null 2>&1 || true
+# Refresh so the new task appears without waiting for the poll interval. It
+# gets a budget of its own rather than the remains of this one.
+notion_run_helper "$HERE/fetch.sh" >/dev/null 2>&1 || true
 
 echo "$url"
