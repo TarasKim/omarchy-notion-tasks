@@ -82,15 +82,17 @@ the bar layout in `~/.config/omarchy/shell.json`, and `omarchy restart shell`.
 |---|---|
 | `~/.config/omarchy/notion-tasks.env` | `NOTION_TOKEN`, mode 600 |
 | `~/.config/omarchy/notion-tasks.json` | which boards, in display order |
-| `~/.local/state/omarchy/notion-tasks.json` | the cache the widget reads, mode 600 |
+| `~/.local/state/omarchy/notion-tasks/cache.json` | the cache the widget reads, mode 600 in a mode-700 directory |
 
 The token lives apart from the config on purpose: the config is safe to share
-or commit, and the secret is not. The cache is mode 600 as well — it is not a
-secret, but it is every open task you have, titles included.
+or commit, and the secret is not. The cache gets a private directory of its
+own — it is not a secret, but it is every open task you have, titles included.
 
-### How the token is handled
+### How the token, the files and the processes are handled
 
-Nothing here is exotic, but it is worth being able to check:
+Nothing here is exotic, but it is worth being able to check.
+
+**The token**
 
 - It is **never passed to `curl` on the command line.** `/proc/<pid>/cmdline` is
   world-readable on a stock kernel, so an `Authorization:` header spelled out as
@@ -99,12 +101,71 @@ Nothing here is exotic, but it is worth being able to check:
   header is written to a file inside a `mktemp -d` (mode 700) and passed as
   `-H @file`. See `notion_auth_file` in `notion-lib.sh`.
 - The env file is **read, not sourced.** `source` executes it, so a stray
-  backtick from a bad paste would run as you. `notion_read_token` parses it.
-- Ids from the config reach a request path and a filename, so they are checked
-  against `^[0-9a-f]{32}$` first.
-- The task URL is **never spliced into a shell command.** It is Notion-supplied,
-  so it travels as a positional parameter that bash expands without
-  re-tokenizing (`Panel.qml`, `openUrl`).
+  backtick from a bad paste would run as you. `notion_read_token` parses it,
+  and accepts only `[A-Za-z0-9_-]{16,256}` as a token.
+
+**Files: one open, then the descriptor**
+
+Nothing is read or written by pathname. `notion_read_file` opens once under a
+deadline, then checks that one descriptor rather than the name it came from:
+the path it actually resolves to (`/proc/self/fd`) must be the path that was
+asked for, it must be a regular file, owned by you, not writable by anyone
+else, and under a size ceiling — and the bytes are then read from that same
+descriptor. The token file additionally has to be unreadable by anyone else.
+A symlinked or replaced leaf is a refusal, not a redirect; a FIFO planted in
+place of a config file times out instead of hanging the widget.
+
+Writes go the other way through `notion_publish`: a descriptor is held on the
+directory, an unpredictable `O_EXCL` scratch inode is created relative to it,
+written with its final mode, fsynced, renamed over the name, and the directory
+fsynced. An existing leaf that is not a regular file is refused. The cache is
+published under a `flock` on that directory descriptor, so the timer, a manual
+refresh and the refresh after a write cannot interleave.
+
+**Sizes, before anything is parsed**
+
+`--max-time` bounds how long Notion may take; it says nothing about how much
+it may send. Every response has a byte ceiling (`notion_curl`), and everything
+that survives parsing has a cardinality ceiling as well — boards, tasks,
+statuses, priorities, select options, relation rows, and the length of every
+single string — applied by `bounds.jq` on the way out and by `Model.js` on the
+way in. Whatever is cut is named in the popup rather than dropped quietly.
+
+**Processes**
+
+Each helper re-execs itself into its own session under an overall deadline
+(`notion_bound_run`), so a wedged refresh is killed rather than held open, and
+the kill reaches `curl` and `jq` with it. Each one also watches the process the
+panel is holding: closing the shell, or the panel stopping a helper, takes the
+whole group down. Stderr is capped at both ends. Capture arguments are bounded
+before a process is spawned and again inside it.
+
+**URLs**
+
+A task URL reaches a command line, so it is checked three times on three
+different paths — in `bounds.jq` when the cache is written, in `Model.js`
+before the widget will hand it to a process, and in `open-task.sh` before it
+will open anything. All three want the same thing: `https`, Notion's own host,
+a 32-hex page id, nothing else. Window addresses from `hyprctl` are matched
+against `0x[0-9a-fA-F]+` before they reach a dispatch, and only windows this
+plugin opened are ever closed.
+
+**The widget reads no files**
+
+`Panel.qml` has no `FileView` on the cache. A long-lived QML process cannot
+open a file the careful way, so it runs `read-cache.sh`, which does all of the
+above and normalises the document through the same `bounds.jq`.
+
+### Checking any of that
+
+```bash
+bash ~/.config/omarchy/plugins/io.github.taraskim.notion-tasks/selftest.sh
+```
+
+`selftest.sh` needs no token and no network, and touches nothing outside its
+own temp directory. It plants the symlinks, FIFOs, oversized files and hostile
+caches the rules above exist for, and asserts what happens to each — 60-odd
+checks, a couple of seconds.
 
 The integration is yours, created in your own workspace, and only reaches the
 boards you explicitly share with it. Nothing is sent anywhere except
@@ -208,7 +269,7 @@ instead of leaving one behind per click:
 | situation | behaviour |
 |---|---|
 | that task already open | focus that window |
-| otherwise | close previous task windows, open this one |
+| otherwise | close the previous task window, open this one |
 
 Chromium derives an `--app` window's class from the **whole URL**, so every
 task gets a distinct class and there is no CLI way to navigate an existing app
@@ -225,11 +286,13 @@ task, `xdg-open` for a browser tab).
 
 ## Data flow
 
-`fetch.sh` → `~/.local/state/omarchy/notion-tasks.json` → widget.
+`fetch.sh` → `~/.local/state/omarchy/notion-tasks/cache.json` → `read-cache.sh`
+→ widget.
 
 The widget only reads the cache, so a failed fetch keeps the last good list on
 screen and surfaces the error in the popup. It re-runs `fetch.sh` every
-`refreshIntervalSec` (default 300s) and on demand.
+`refreshIntervalSec` (default 300s) and on demand, and reads the cache back
+through `read-cache.sh` each time rather than watching the file.
 
 Writes go the other way and are never applied to the cache directly:
 `create-task.sh` and `set-status.sh` talk to Notion, then re-run `fetch.sh`, so
@@ -289,9 +352,12 @@ keys together.
 | File | Role |
 |---|---|
 | `setup.sh` | interactive: token, identity, board selection |
-| `notion-lib.sh` | token reading and auth handling, shared by the four scripts |
+| `notion-lib.sh` | file, secret, transport and process handling, shared by every script |
 | `fetch.sh` | reads every board, writes the cache |
 | `notion.jq` | the schema inference, shared by fetch and setup |
+| `bounds.jq` | every ceiling the cache is held to, in one place |
+| `read-cache.sh` | the widget's only way to read the cache |
+| `selftest.sh` | offline checks for all of the above |
 | `create-task.sh` | quick capture |
 | `set-status.sh` | complete / change status |
 | `open-task.sh` | window reuse when opening a task |
@@ -326,7 +392,7 @@ live outside it and are left alone, because they are yours:
 ```bash
 rm ~/.config/omarchy/notion-tasks.env      # the token
 rm ~/.config/omarchy/notion-tasks.json     # which boards you chose
-rm ~/.local/state/omarchy/notion-tasks.json # the cache
+rm -r ~/.local/state/omarchy/notion-tasks  # the cache
 ```
 
 Nothing in Notion is touched by removal — no task, status or database is
